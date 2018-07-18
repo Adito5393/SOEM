@@ -1,0 +1,9 @@
+Package: soem
+Version: 1.3.3-halodi0
+Architecture: amd64
+Maintainer: Jesper Smith <jesper@halodi.com>
+Installed-Size: 482
+Section: unknown
+Priority: optional
+Homepage: https://github.com/Halodi/SOEM
+Description: Simple Open Source EtherCAT Master
