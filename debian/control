@@ -1,5 +1,5 @@
 Source: soem
-Section: unknown
+Section: misc
 Priority: optional
 Maintainer: Jesper Smith <jesper@halodi.com>
 Build-Depends: debhelper (>= 10), cmake
