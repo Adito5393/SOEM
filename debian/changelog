@@ -1,3 +1,9 @@
+soem (1.3.3-halodi3) xenial; urgency=medium
+
+  * Build for xenial
+
+ -- Jesper Smith <jesper@halodi.com>  Tue, 24 Jul 2018 09:47:27 +0200
+
 soem (1.3.3-halodi2) bionic; urgency=medium
 
   * Switch to section misc 
