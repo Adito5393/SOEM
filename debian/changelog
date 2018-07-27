@@ -1,3 +1,9 @@
+soem (1.3.3-halodi4~xenial1) xenial; urgency=medium
+
+  * Updated to include feature/config_init_to_state
+
+ -- Jesper Smith <jesper@halodi.com>  Fri, 27 Jul 2018 15:07:04 +0200
+
 soem (1.3.3-halodi3~xenial3) xenial; urgency=medium
 
   * Downgraded debhelper requirement to version 9
