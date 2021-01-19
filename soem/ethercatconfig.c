@@ -22,14 +22,6 @@
 #include "ethercatsoe.h"
 #include "ethercatconfig.h"
 
-// define if debug printf is needed
-//#define EC_DEBUG
-
-#ifdef EC_DEBUG
-#define EC_PRINT printf
-#else
-#define EC_PRINT(...) do {} while (0)
-#endif
 
 typedef struct
 {
@@ -40,7 +32,9 @@ typedef struct
 } ecx_mapt_t;
 
 ecx_mapt_t ecx_mapt[EC_MAX_MAPT];
+#if EC_MAX_MAPT > 1
 OSAL_THREAD_HANDLE ecx_threadh[EC_MAX_MAPT];
+#endif
 
 #ifdef EC_VER1
 /** Slave configuration structure */
@@ -117,7 +111,8 @@ void ecx_init_context(ecx_contextt *context)
    ecx_siigetbyte(context, 0, EC_MAXEEPBUF);
    for(lp = 0; lp < context->maxgroup; lp++)
    {
-      context->grouplist[lp].logstartaddr = lp << 16; /* default start address per group entry */
+      /* default start address per group entry */
+      context->grouplist[lp].logstartaddr = lp << EC_LOGGROUPOFFSET;
    }
 }
 
@@ -147,7 +142,7 @@ int ecx_detect_slaves(ecx_contextt *context)
       {
          EC_PRINT("Error: too many slaves on network: num_slaves=%d, EC_MAXSLAVE=%d\n",
                wkc, EC_MAXSLAVE);
-         return -2;
+         return EC_SLAVECOUNTEXCEEDED;
       }
    }
    return wkc;
@@ -166,8 +161,8 @@ static void ecx_set_slaves_to_default(ecx_contextt *context)
    ecx_BWR(context->port, 0x0000, ECT_REG_RXERR       , 8         , &zbuf, EC_TIMEOUTRET3);  /* reset CRC counters */
    ecx_BWR(context->port, 0x0000, ECT_REG_FMMU0       , 16 * 3    , &zbuf, EC_TIMEOUTRET3);  /* reset FMMU's */
    ecx_BWR(context->port, 0x0000, ECT_REG_SM0         , 8 * 4     , &zbuf, EC_TIMEOUTRET3);  /* reset SyncM */
-   b = 0x00; 
-   ecx_BWR(context->port, 0x0000, ECT_REG_DCSYNCACT   , sizeof(b) , &b, EC_TIMEOUTRET3);     /* reset activation register */ 
+   b = 0x00;
+   ecx_BWR(context->port, 0x0000, ECT_REG_DCSYNCACT   , sizeof(b) , &b, EC_TIMEOUTRET3);     /* reset activation register */
    ecx_BWR(context->port, 0x0000, ECT_REG_DCSYSTIME   , 4         , &zbuf, EC_TIMEOUTRET3);  /* reset system time+ofs */
    w = htoes(0x1000);
    ecx_BWR(context->port, 0x0000, ECT_REG_DCSPEEDCNT  , sizeof(w) , &w, EC_TIMEOUTRET3);     /* DC speedstart */
@@ -251,6 +246,8 @@ static int ecx_config_from_table(ecx_contextt *context, uint16 slave)
 #else
 static int ecx_config_from_table(ecx_contextt *context, uint16 slave)
 {
+   (void)context;
+   (void)slave;
    return 0;
 }
 #endif
@@ -317,6 +314,7 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
    uint8 SMc;
    uint32 eedat;
    int wkc, cindex, nSM;
+   uint16 val16;
 
    EC_PRINT("ec_config_init %d\n",usetable);
    ecx_init_context(context);
@@ -327,9 +325,9 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
          ADPh = (uint16)(1 - slave);
-         context->slavelist[slave].Itype =
-            etohs(ecx_APRDw(context->port, ADPh, ECT_REG_PDICTL, EC_TIMEOUTRET3)); /* read interface type of slave */
-         /* a node offset is used to improve readibility of network frames */
+         val16 = ecx_APRDw(context->port, ADPh, ECT_REG_PDICTL, EC_TIMEOUTRET3); /* read interface type of slave */
+         context->slavelist[slave].Itype = etohs(val16);
+         /* a node offset is used to improve readability of network frames */
          /* this has no impact on the number of addressable slaves (auto wrap around) */
          ecx_APWRw(context->port, ADPh, ECT_REG_STADR, htoes(slave + EC_NODEOFFSET) , EC_TIMEOUTRET3); /* set node address of slave */
          if (slave == 1)
@@ -341,7 +339,8 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
             b = 0; /* pass all frames for following slaves */
          }
          ecx_APWRw(context->port, ADPh, ECT_REG_DLCTL, htoes(b), EC_TIMEOUTRET3); /* set non ecat frame behaviour */
-         configadr = etohs(ecx_APRDw(context->port, ADPh, ECT_REG_STADR, EC_TIMEOUTRET3));
+         configadr = ecx_APRDw(context->port, ADPh, ECT_REG_STADR, EC_TIMEOUTRET3);
+         configadr = etohs(configadr);
          context->slavelist[slave].configadr = configadr;
          ecx_FPRD(context->port, configadr, ECT_REG_ALIAS, sizeof(aliasadr), &aliasadr, EC_TIMEOUTRET3);
          context->slavelist[slave].aliasadr = etohs(aliasadr);
@@ -355,27 +354,27 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
       }
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
-         context->slavelist[slave].eep_man =
-            etohl(ecx_readeeprom2(context, slave, EC_TIMEOUTEEP)); /* Manuf */
+         eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP); /* Manuf */
+         context->slavelist[slave].eep_man = etohl(eedat);
          ecx_readeeprom1(context, slave, ECT_SII_ID); /* ID */
       }
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
-         context->slavelist[slave].eep_id =
-            etohl(ecx_readeeprom2(context, slave, EC_TIMEOUTEEP)); /* ID */
+         eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP); /* ID */
+         context->slavelist[slave].eep_id = etohl(eedat);
          ecx_readeeprom1(context, slave, ECT_SII_REV); /* revision */
       }
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
-         context->slavelist[slave].eep_rev =
-            etohl(ecx_readeeprom2(context, slave, EC_TIMEOUTEEP)); /* revision */
+         eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP); /* revision */
+         context->slavelist[slave].eep_rev = etohl(eedat);
          ecx_readeeprom1(context, slave, ECT_SII_RXMBXADR); /* write mailbox address + mailboxsize */
       }
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
-         eedat = etohl(ecx_readeeprom2(context, slave, EC_TIMEOUTEEP)); /* write mailbox address and mailboxsize */
-         context->slavelist[slave].mbx_wo = (uint16)LO_WORD(eedat);
-         context->slavelist[slave].mbx_l = (uint16)HI_WORD(eedat);
+         eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP); /* write mailbox address and mailboxsize */
+         context->slavelist[slave].mbx_wo = (uint16)LO_WORD(etohl(eedat));
+         context->slavelist[slave].mbx_l = (uint16)HI_WORD(etohl(eedat));
          if (context->slavelist[slave].mbx_l > 0)
          {
             ecx_readeeprom1(context, slave, ECT_SII_TXMBXADR); /* read mailbox offset */
@@ -385,9 +384,9 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
       {
          if (context->slavelist[slave].mbx_l > 0)
          {
-            eedat = etohl(ecx_readeeprom2(context, slave, EC_TIMEOUTEEP)); /* read mailbox offset */
-            context->slavelist[slave].mbx_ro = (uint16)LO_WORD(eedat); /* read mailbox offset */
-            context->slavelist[slave].mbx_rl = (uint16)HI_WORD(eedat); /*read mailbox length */
+            eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP); /* read mailbox offset */
+            context->slavelist[slave].mbx_ro = (uint16)LO_WORD(etohl(eedat)); /* read mailbox offset */
+            context->slavelist[slave].mbx_rl = (uint16)HI_WORD(etohl(eedat)); /*read mailbox length */
             if (context->slavelist[slave].mbx_rl == 0)
             {
                context->slavelist[slave].mbx_rl = context->slavelist[slave].mbx_l;
@@ -395,7 +394,8 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
             ecx_readeeprom1(context, slave, ECT_SII_MBXPROTO);
          }
          configadr = context->slavelist[slave].configadr;
-         if ((etohs(ecx_FPRDw(context->port, configadr, ECT_REG_ESCSUP, EC_TIMEOUTRET3)) & 0x04) > 0)  /* Support DC? */
+         val16 = ecx_FPRDw(context->port, configadr, ECT_REG_ESCSUP, EC_TIMEOUTRET3);
+         if ((etohs(val16) & 0x04) > 0)  /* Support DC? */
          {
             context->slavelist[slave].hasdc = TRUE;
          }
@@ -403,7 +403,8 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
          {
             context->slavelist[slave].hasdc = FALSE;
          }
-         topology = etohs(ecx_FPRDw(context->port, configadr, ECT_REG_DLSTAT, EC_TIMEOUTRET3)); /* extract topology from DL status */
+         topology = ecx_FPRDw(context->port, configadr, ECT_REG_DLSTAT, EC_TIMEOUTRET3); /* extract topology from DL status */
+         topology = etohs(topology);
          h = 0;
          b = 0;
          if ((topology & 0x0300) == 0x0200) /* port0 open and communication established */
@@ -427,8 +428,8 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
             b |= 0x08;
          }
          /* ptype = Physical type*/
-         context->slavelist[slave].ptype =
-            LO_BYTE(etohs(ecx_FPRDw(context->port, configadr, ECT_REG_PORTDES, EC_TIMEOUTRET3)));
+         val16 = ecx_FPRDw(context->port, configadr, ECT_REG_PORTDES, EC_TIMEOUTRET3);
+         context->slavelist[slave].ptype = LO_BYTE(etohs(val16));
          context->slavelist[slave].topology = h;
          context->slavelist[slave].activeports = b;
          /* 0=no links, not possible             */
@@ -482,8 +483,8 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
             context->slavelist[slave].SM[1].StartAddr = htoes(context->slavelist[slave].mbx_ro);
             context->slavelist[slave].SM[1].SMlength = htoes(context->slavelist[slave].mbx_rl);
             context->slavelist[slave].SM[1].SMflags = htoel(EC_DEFAULTMBXSM1);
-            context->slavelist[slave].mbx_proto =
-               ecx_readeeprom2(context, slave, EC_TIMEOUTEEP);
+            eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP);
+            context->slavelist[slave].mbx_proto = (uint16)etohl(eedat);
          }
          cindex = 0;
          /* use configuration table ? */
@@ -588,8 +589,16 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
          }
          /* some slaves need eeprom available to PDI in init->preop transition */
          ecx_eeprom2pdi(context, slave);
-         /* request pre_op for slave */
-         ecx_FPWRw(context->port, configadr, ECT_REG_ALCTL, htoes(EC_STATE_PRE_OP | EC_STATE_ACK) , EC_TIMEOUTRET3); /* set preop status */
+         /* User may override automatic state change */
+         if (context->manualstatechange == 0)
+         {
+            /* request pre_op for slave */
+            ecx_FPWRw(context->port,
+               configadr,
+               ECT_REG_ALCTL,
+               htoes(EC_STATE_PRE_OP | EC_STATE_ACK),
+               EC_TIMEOUTRET3); /* set preop status */
+         }
       }
    }
    return wkc;
@@ -598,7 +607,7 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
 /* If slave has SII mapping and same slave ID done before, use previous mapping.
  * This is safe because SII mapping is constant for same slave ID.
  */
-static int ecx_lookup_mapping(ecx_contextt *context, uint16 slave, int *Osize, int *Isize)
+static int ecx_lookup_mapping(ecx_contextt *context, uint16 slave, uint32 *Osize, uint32 *Isize)
 {
    int i, nSM;
    if ((slave > 1) && (*(context->slavecount) > 0))
@@ -620,8 +629,8 @@ static int ecx_lookup_mapping(ecx_contextt *context, uint16 slave, int *Osize, i
          }
          *Osize = context->slavelist[i].Obits;
          *Isize = context->slavelist[i].Ibits;
-         context->slavelist[slave].Obits = *Osize;
-         context->slavelist[slave].Ibits = *Isize;
+         context->slavelist[slave].Obits = (uint16)*Osize;
+         context->slavelist[slave].Ibits = (uint16)*Isize;
          EC_PRINT("Copy mapping slave %d from %d.\n", slave, i);
          return 1;
       }
@@ -631,7 +640,7 @@ static int ecx_lookup_mapping(ecx_contextt *context, uint16 slave, int *Osize, i
 
 static int ecx_map_coe_soe(ecx_contextt *context, uint16 slave, int thread_n)
 {
-   int Isize, Osize;
+   uint32 Isize, Osize;
    int rval;
 
    ecx_statecheck(context, slave, EC_STATE_PRE_OP, EC_TIMEOUTSTATE); /* check state change pre-op */
@@ -643,6 +652,10 @@ static int ecx_map_coe_soe(ecx_contextt *context, uint16 slave, int thread_n)
    if(context->slavelist[slave].PO2SOconfig) /* only if registered */
    {
       context->slavelist[slave].PO2SOconfig(slave);
+   }
+   if (context->slavelist[slave].PO2SOconfigx) /* only if registered */
+   {
+      context->slavelist[slave].PO2SOconfigx(context, slave);
    }
    /* if slave not found in configlist find IO mapping in slave self */
    if (!context->slavelist[slave].configindex)
@@ -662,18 +675,18 @@ static int ecx_map_coe_soe(ecx_contextt *context, uint16 slave, int thread_n)
             /* read PDO mapping via CoE */
             rval = ecx_readPDOmap(context, slave, &Osize, &Isize);
          }
-         EC_PRINT("  CoE Osize:%d Isize:%d\n", Osize, Isize);
+         EC_PRINT("  CoE Osize:%u Isize:%u\n", Osize, Isize);
       }
       if ((!Isize && !Osize) && (context->slavelist[slave].mbx_proto & ECT_MBXPROT_SOE)) /* has SoE */
       {
          /* read AT / MDT mapping via SoE */
          rval = ecx_readIDNmap(context, slave, &Osize, &Isize);
-         context->slavelist[slave].SM[2].SMlength = htoes((Osize + 7) / 8);
-         context->slavelist[slave].SM[3].SMlength = htoes((Isize + 7) / 8);
-         EC_PRINT("  SoE Osize:%d Isize:%d\n", Osize, Isize);
+         context->slavelist[slave].SM[2].SMlength = htoes((uint16)((Osize + 7) / 8));
+         context->slavelist[slave].SM[3].SMlength = htoes((uint16)((Isize + 7) / 8));
+         EC_PRINT("  SoE Osize:%u Isize:%u\n", Osize, Isize);
       }
-      context->slavelist[slave].Obits = Osize;
-      context->slavelist[slave].Ibits = Isize;
+      context->slavelist[slave].Obits = (uint16)Osize;
+      context->slavelist[slave].Ibits = (uint16)Isize;
    }
 
    return 1;
@@ -681,7 +694,7 @@ static int ecx_map_coe_soe(ecx_contextt *context, uint16 slave, int thread_n)
 
 static int ecx_map_sii(ecx_contextt *context, uint16 slave)
 {
-   int Isize, Osize;
+   uint32 Isize, Osize;
    int nSM;
    ec_eepromPDOt eepPDO;
 
@@ -695,8 +708,8 @@ static int ecx_map_sii(ecx_contextt *context, uint16 slave)
    if (!Isize && !Osize) /* find PDO mapping by SII */
    {
       memset(&eepPDO, 0, sizeof(eepPDO));
-      Isize = (int)ecx_siiPDO(context, slave, &eepPDO, 0);
-      EC_PRINT("  SII Isize:%d\n", Isize);
+      Isize = ecx_siiPDO(context, slave, &eepPDO, 0);
+      EC_PRINT("  SII Isize:%u\n", Isize);
       for( nSM=0 ; nSM < EC_MAXSM ; nSM++ )
       {
          if (eepPDO.SMbitsize[nSM] > 0)
@@ -706,8 +719,8 @@ static int ecx_map_sii(ecx_contextt *context, uint16 slave)
             EC_PRINT("    SM%d length %d\n", nSM, eepPDO.SMbitsize[nSM]);
          }
       }
-      Osize = (int)ecx_siiPDO(context, slave, &eepPDO, 1);
-      EC_PRINT("  SII Osize:%d\n", Osize);
+      Osize = ecx_siiPDO(context, slave, &eepPDO, 1);
+      EC_PRINT("  SII Osize:%u\n", Osize);
       for( nSM=0 ; nSM < EC_MAXSM ; nSM++ )
       {
          if (eepPDO.SMbitsize[nSM] > 0)
@@ -718,8 +731,8 @@ static int ecx_map_sii(ecx_contextt *context, uint16 slave)
          }
       }
    }
-   context->slavelist[slave].Obits = Osize;
-   context->slavelist[slave].Ibits = Isize;
+   context->slavelist[slave].Obits = (uint16)Osize;
+   context->slavelist[slave].Ibits = (uint16)Isize;
    EC_PRINT("     ISIZE:%d %d OSIZE:%d\n",
       context->slavelist[slave].Ibits, Isize,context->slavelist[slave].Obits);
 
@@ -740,8 +753,8 @@ static int ecx_map_sm(ecx_contextt *context, uint16 slave)
          sizeof(ec_smt), &(context->slavelist[slave].SM[0]), EC_TIMEOUTRET3);
       EC_PRINT("    SM0 Type:%d StartAddr:%4.4x Flags:%8.8x\n",
           context->slavelist[slave].SMtype[0],
-          context->slavelist[slave].SM[0].StartAddr,
-          context->slavelist[slave].SM[0].SMflags);
+          etohs(context->slavelist[slave].SM[0].StartAddr),
+          etohl(context->slavelist[slave].SM[0].SMflags));
    }
    if (!context->slavelist[slave].mbx_l && context->slavelist[slave].SM[1].StartAddr)
    {
@@ -749,8 +762,8 @@ static int ecx_map_sm(ecx_contextt *context, uint16 slave)
          sizeof(ec_smt), &context->slavelist[slave].SM[1], EC_TIMEOUTRET3);
       EC_PRINT("    SM1 Type:%d StartAddr:%4.4x Flags:%8.8x\n",
           context->slavelist[slave].SMtype[1],
-          context->slavelist[slave].SM[1].StartAddr,
-          context->slavelist[slave].SM[1].SMflags);
+          etohs(context->slavelist[slave].SM[1].StartAddr),
+          etohl(context->slavelist[slave].SM[1].SMflags));
    }
    /* program SM2 to SMx */
    for( nSM = 2 ; nSM < EC_MAXSM ; nSM++ )
@@ -763,12 +776,18 @@ static int ecx_map_sm(ecx_contextt *context, uint16 slave)
             context->slavelist[slave].SM[nSM].SMflags =
                htoel( etohl(context->slavelist[slave].SM[nSM].SMflags) & EC_SMENABLEMASK);
          }
+         /* if SM length is non zero always set enable flag */
+         else
+         {
+            context->slavelist[slave].SM[nSM].SMflags =
+               htoel( etohl(context->slavelist[slave].SM[nSM].SMflags) | ~EC_SMENABLEMASK);
+         }
          ecx_FPWR(context->port, configadr, (uint16)(ECT_REG_SM0 + (nSM * sizeof(ec_smt))),
             sizeof(ec_smt), &context->slavelist[slave].SM[nSM], EC_TIMEOUTRET3);
          EC_PRINT("    SM%d Type:%d StartAddr:%4.4x Flags:%8.8x\n", nSM,
              context->slavelist[slave].SMtype[nSM],
-             context->slavelist[slave].SM[nSM].StartAddr,
-             context->slavelist[slave].SM[nSM].SMflags);
+             etohs(context->slavelist[slave].SM[nSM].StartAddr),
+             etohl(context->slavelist[slave].SM[nSM].SMflags));
       }
    }
    if (context->slavelist[slave].Ibits > 7)
@@ -783,6 +802,7 @@ static int ecx_map_sm(ecx_contextt *context, uint16 slave)
    return 1;
 }
 
+#if EC_MAX_MAPT > 1
 OSAL_THREAD_FUNC ecx_mapper_thread(void *param)
 {
    ecx_mapt_t *maptp;
@@ -808,6 +828,7 @@ static int ecx_find_mapt(void)
       return -1;
    }
 }
+#endif
 
 static int ecx_get_threadcount(void)
 {
@@ -834,13 +855,7 @@ static void ecx_config_find_mappings(ecx_contextt *context, uint8 group)
    {
       if (!group || (group == context->slavelist[slave].group))
       {
-         if (EC_MAX_MAPT <= 1)
-         {
-            /* serialised version */
-            ecx_map_coe_soe(context, slave, 0);
-         }
-         else
-         {
+#if EC_MAX_MAPT > 1
             /* multi-threaded version */
             while ((thrn = ecx_find_mapt()) < 0)
             {
@@ -852,7 +867,10 @@ static void ecx_config_find_mappings(ecx_contextt *context, uint8 group)
             ecx_mapt[thrn].running = 1;
             osal_thread_create(&(ecx_threadh[thrn]), 128000,
                &ecx_mapper_thread, &(ecx_mapt[thrn]));
-         }
+#else
+            /* serialised version */
+            ecx_map_coe_soe(context, slave, 0);
+#endif
       }
    }
    /* wait for all threads to finish */
@@ -879,9 +897,10 @@ static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap
    uint8 group, int16 slave, uint32 * LogAddr, uint8 * BitPos)
 {
    int BitCount = 0;
-   int ByteCount = 0;
-   int FMMUsize = 0;
    int FMMUdone = 0;
+   int AddToInputsWKC = 0;
+   uint16 ByteCount = 0;
+   uint16 FMMUsize = 0;
    uint8 SMc = 0;
    uint16 EndAddr;
    uint16 SMlength;
@@ -921,7 +940,7 @@ static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap
          {
             SMc++;
          }
-         /* if addresses from more SM connect use one FMMU otherwise break up in mutiple FMMU */
+         /* if addresses from more SM connect use one FMMU otherwise break up in multiple FMMU */
          if (etohs(context->slavelist[slave].SM[SMc].StartAddr) > EndAddr)
          {
             break;
@@ -944,7 +963,7 @@ static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap
             *LogAddr += 1;
             *BitPos -= 8;
          }
-         FMMUsize = *LogAddr - etohl(context->slavelist[slave].FMMU[FMMUc].LogStart) + 1;
+         FMMUsize = (uint16)(*LogAddr - etohl(context->slavelist[slave].FMMU[FMMUc].LogStart) + 1);
          context->slavelist[slave].FMMU[FMMUc].LogLength = htoes(FMMUsize);
          context->slavelist[slave].FMMU[FMMUc].LogEndbit = *BitPos;
          *BitPos += 1;
@@ -968,7 +987,7 @@ static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap
          FMMUsize = ByteCount;
          if ((FMMUsize + FMMUdone)> (int)context->slavelist[slave].Ibytes)
          {
-            FMMUsize = context->slavelist[slave].Ibytes - FMMUdone;
+            FMMUsize = (uint16)(context->slavelist[slave].Ibytes - FMMUdone);
          }
          *LogAddr += FMMUsize;
          context->slavelist[slave].FMMU[FMMUc].LogLength = htoes(FMMUsize);
@@ -984,13 +1003,25 @@ static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap
          /* program FMMU for input */
          ecx_FPWR(context->port, configadr, ECT_REG_FMMU0 + (sizeof(ec_fmmut) * FMMUc),
             sizeof(ec_fmmut), &(context->slavelist[slave].FMMU[FMMUc]), EC_TIMEOUTRET3);
-         /* add one for an input FMMU */
-         context->grouplist[group].inputsWKC++;
+         /* Set flag to add one for an input FMMU,
+            a single ESC can only contribute once */
+         AddToInputsWKC = 1;
       }
       if (!context->slavelist[slave].inputs)
       {
-         context->slavelist[slave].inputs =
-            (uint8 *)(pIOmap)+etohl(context->slavelist[slave].FMMU[FMMUc].LogStart);
+         if (group)
+         {
+            context->slavelist[slave].inputs =
+               (uint8 *)(pIOmap) + 
+               etohl(context->slavelist[slave].FMMU[FMMUc].LogStart) - 
+               context->grouplist[group].logstartaddr;
+         }
+         else
+         {
+            context->slavelist[slave].inputs =
+               (uint8 *)(pIOmap) +
+               etohl(context->slavelist[slave].FMMU[FMMUc].LogStart);
+         }
          context->slavelist[slave].Istartbit =
             context->slavelist[slave].FMMU[FMMUc].LogStartbit;
          EC_PRINT("    Inputs %p startbit %d\n",
@@ -1000,15 +1031,20 @@ static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap
       FMMUc++;
    }
    context->slavelist[slave].FMMUunused = FMMUc;
+
+   /* Add one WKC for an input if flag is true */
+   if (AddToInputsWKC)
+      context->grouplist[group].inputsWKC++;
 }
 
 static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOmap, 
    uint8 group, int16 slave, uint32 * LogAddr, uint8 * BitPos)
 {
    int BitCount = 0;
-   int ByteCount = 0;
-   int FMMUsize = 0;
    int FMMUdone = 0;
+   int AddToOutputsWKC = 0;
+   uint16 ByteCount = 0;
+   uint16 FMMUsize = 0;
    uint8 SMc = 0;
    uint16 EndAddr;
    uint16 SMlength;
@@ -1042,7 +1078,7 @@ static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOma
          {
             SMc++;
          }
-         /* if addresses from more SM connect use one FMMU otherwise break up in mutiple FMMU */
+         /* if addresses from more SM connect use one FMMU otherwise break up in multiple FMMU */
          if (etohs(context->slavelist[slave].SM[SMc].StartAddr) > EndAddr)
          {
             break;
@@ -1065,7 +1101,7 @@ static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOma
             *LogAddr += 1;
             *BitPos -= 8;
          }
-         FMMUsize = *LogAddr - etohl(context->slavelist[slave].FMMU[FMMUc].LogStart) + 1;
+         FMMUsize = (uint16)(*LogAddr - etohl(context->slavelist[slave].FMMU[FMMUc].LogStart) + 1);
          context->slavelist[slave].FMMU[FMMUc].LogLength = htoes(FMMUsize);
          context->slavelist[slave].FMMU[FMMUc].LogEndbit = *BitPos;
          *BitPos += 1;
@@ -1089,7 +1125,7 @@ static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOma
          FMMUsize = ByteCount;
          if ((FMMUsize + FMMUdone)> (int)context->slavelist[slave].Obytes)
          {
-            FMMUsize = context->slavelist[slave].Obytes - FMMUdone;
+            FMMUsize = (uint16)(context->slavelist[slave].Obytes - FMMUdone);
          }
          *LogAddr += FMMUsize;
          context->slavelist[slave].FMMU[FMMUc].LogLength = htoes(FMMUsize);
@@ -1097,17 +1133,33 @@ static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOma
          *BitPos = 0;
       }
       FMMUdone += FMMUsize;
-      context->slavelist[slave].FMMU[FMMUc].PhysStartBit = 0;
-      context->slavelist[slave].FMMU[FMMUc].FMMUtype = 2;
-      context->slavelist[slave].FMMU[FMMUc].FMMUactive = 1;
-      /* program FMMU for output */
-      ecx_FPWR(context->port, configadr, ECT_REG_FMMU0 + (sizeof(ec_fmmut) * FMMUc),
-         sizeof(ec_fmmut), &(context->slavelist[slave].FMMU[FMMUc]), EC_TIMEOUTRET3);
-      context->grouplist[group].outputsWKC++;
+      if (context->slavelist[slave].FMMU[FMMUc].LogLength)
+      {
+         context->slavelist[slave].FMMU[FMMUc].PhysStartBit = 0;
+         context->slavelist[slave].FMMU[FMMUc].FMMUtype = 2;
+         context->slavelist[slave].FMMU[FMMUc].FMMUactive = 1;
+         /* program FMMU for output */
+         ecx_FPWR(context->port, configadr, ECT_REG_FMMU0 + (sizeof(ec_fmmut) * FMMUc),
+            sizeof(ec_fmmut), &(context->slavelist[slave].FMMU[FMMUc]), EC_TIMEOUTRET3);
+         /* Set flag to add one for an output FMMU,
+            a single ESC can only contribute once */
+         AddToOutputsWKC = 1;
+      }
       if (!context->slavelist[slave].outputs)
       {
-         context->slavelist[slave].outputs =
-            (uint8 *)(pIOmap)+etohl(context->slavelist[slave].FMMU[FMMUc].LogStart);
+         if (group)
+         {
+            context->slavelist[slave].outputs =
+               (uint8 *)(pIOmap) + 
+               etohl(context->slavelist[slave].FMMU[FMMUc].LogStart) - 
+               context->grouplist[group].logstartaddr;
+         }
+         else
+         {
+            context->slavelist[slave].outputs =
+               (uint8 *)(pIOmap) + 
+               etohl(context->slavelist[slave].FMMU[FMMUc].LogStart);
+         }
          context->slavelist[slave].Ostartbit =
             context->slavelist[slave].FMMU[FMMUc].LogStartbit;
          EC_PRINT("    slave %d Outputs %p startbit %d\n",
@@ -1118,6 +1170,9 @@ static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOma
       FMMUc++;
    }
    context->slavelist[slave].FMMUunused = FMMUc;
+   /* Add one WKC for an output if flag is true */
+   if (AddToOutputsWKC)
+      context->grouplist[group].outputsWKC++;
 }
 
 /** Map all PDOs in one group of slaves to IOmap with Outputs/Inputs
@@ -1201,14 +1256,15 @@ int ecx_config_map_group(ecx_contextt *context, void *pIOmap, uint8 group)
          }
       }
       context->grouplist[group].outputs = pIOmap;
-      context->grouplist[group].Obytes = LogAddr;
+      context->grouplist[group].Obytes = LogAddr - context->grouplist[group].logstartaddr;
       context->grouplist[group].nsegments = currentsegment + 1;
       context->grouplist[group].Isegment = currentsegment;
-      context->grouplist[group].Ioffset = segmentsize;
+      context->grouplist[group].Ioffset = (uint16)segmentsize;
       if (!group)
       {
          context->slavelist[0].outputs = pIOmap;
-         context->slavelist[0].Obytes = LogAddr; /* store output bytes in master record */
+         context->slavelist[0].Obytes = LogAddr - 
+            context->grouplist[group].logstartaddr; /* store output bytes in master record */
       }
 
       /* do input mapping of slave and program FMMUs */
@@ -1240,8 +1296,16 @@ int ecx_config_map_group(ecx_contextt *context, void *pIOmap, uint8 group)
             }
 
             ecx_eeprom2pdi(context, slave); /* set Eeprom control to PDI */
-            ecx_FPWRw(context->port, configadr, ECT_REG_ALCTL, htoes(EC_STATE_SAFE_OP) , EC_TIMEOUTRET3); /* set safeop status */
-
+            /* User may override automatic state change */
+            if (context->manualstatechange == 0)
+            {
+               /* request safe_op for slave */
+               ecx_FPWRw(context->port,
+                  configadr,
+                  ECT_REG_ALCTL,
+                  htoes(EC_STATE_SAFE_OP),
+                  EC_TIMEOUTRET3); /* set safeop status */
+            }
             if (context->slavelist[slave].blockLRW)
             {
                context->grouplist[group].blockLRW++;
@@ -1271,11 +1335,15 @@ int ecx_config_map_group(ecx_contextt *context, void *pIOmap, uint8 group)
       context->grouplist[group].IOsegment[currentsegment] = segmentsize;
       context->grouplist[group].nsegments = currentsegment + 1;
       context->grouplist[group].inputs = (uint8 *)(pIOmap) + context->grouplist[group].Obytes;
-      context->grouplist[group].Ibytes = LogAddr - context->grouplist[group].Obytes;
+      context->grouplist[group].Ibytes = LogAddr - 
+         context->grouplist[group].logstartaddr - 
+         context->grouplist[group].Obytes;
       if (!group)
       {
          context->slavelist[0].inputs = (uint8 *)(pIOmap) + context->slavelist[0].Obytes;
-         context->slavelist[0].Ibytes = LogAddr - context->slavelist[0].Obytes; /* store input bytes in master record */
+         context->slavelist[0].Ibytes = LogAddr - 
+            context->grouplist[group].logstartaddr - 
+            context->slavelist[0].Obytes; /* store input bytes in master record */
       }
 
       EC_PRINT("IOmapSize %d\n", LogAddr - context->grouplist[group].logstartaddr);
@@ -1372,8 +1440,16 @@ int ecx_config_overlap_map_group(ecx_contextt *context, void *pIOmap, uint8 grou
             }
 
             ecx_eeprom2pdi(context, slave); /* set Eeprom control to PDI */
-            ecx_FPWRw(context->port, configadr, ECT_REG_ALCTL, htoes(EC_STATE_SAFE_OP), EC_TIMEOUTRET3); /* set safeop status */
-
+            /* User may override automatic state change */
+            if (context->manualstatechange == 0)
+            {
+               /* request safe_op for slave */
+               ecx_FPWRw(context->port,
+                  configadr,
+                  ECT_REG_ALCTL,
+                  htoes(EC_STATE_SAFE_OP),
+                  EC_TIMEOUTRET3);
+            }
             if (context->slavelist[slave].blockLRW)
             {
                context->grouplist[group].blockLRW++;
@@ -1388,8 +1464,8 @@ int ecx_config_overlap_map_group(ecx_contextt *context, void *pIOmap, uint8 grou
       context->grouplist[group].Isegment = 0;
       context->grouplist[group].Ioffset = 0;
 
-      context->grouplist[group].Obytes = soLogAddr;
-      context->grouplist[group].Ibytes = siLogAddr;
+      context->grouplist[group].Obytes = soLogAddr - context->grouplist[group].logstartaddr;
+      context->grouplist[group].Ibytes = siLogAddr - context->grouplist[group].logstartaddr;
       context->grouplist[group].outputs = pIOmap;
       context->grouplist[group].inputs = (uint8 *)pIOmap + context->grouplist[group].Obytes;
 
@@ -1401,10 +1477,11 @@ int ecx_config_overlap_map_group(ecx_contextt *context, void *pIOmap, uint8 grou
 
       if (!group)
       {
+         /* store output bytes in master record */
          context->slavelist[0].outputs = pIOmap;
-         context->slavelist[0].Obytes = soLogAddr; /* store output bytes in master record */
+         context->slavelist[0].Obytes = soLogAddr - context->grouplist[group].logstartaddr; 
          context->slavelist[0].inputs = (uint8 *)pIOmap + context->slavelist[0].Obytes;
-         context->slavelist[0].Ibytes = siLogAddr;
+         context->slavelist[0].Ibytes = siLogAddr - context->grouplist[group].logstartaddr;
       }
 
       EC_PRINT("IOmapSize %d\n", context->grouplist[group].Obytes + context->grouplist[group].Ibytes);
@@ -1457,13 +1534,13 @@ int ecx_recover_slave(ecx_contextt *context, uint16 slave, int timeout)
 
       /* check if slave is the same as configured before */
       if ((ecx_FPRDw(context->port, EC_TEMPNODE, ECT_REG_ALIAS, timeout) ==
-             context->slavelist[slave].aliasadr) &&
+             htoes(context->slavelist[slave].aliasadr)) &&
           (ecx_readeeprom(context, slave, ECT_SII_ID, EC_TIMEOUTEEP) ==
-             context->slavelist[slave].eep_id) &&
+             htoel(context->slavelist[slave].eep_id)) &&
           (ecx_readeeprom(context, slave, ECT_SII_MANUF, EC_TIMEOUTEEP) ==
-             context->slavelist[slave].eep_man) &&
+             htoel(context->slavelist[slave].eep_man)) &&
           (ecx_readeeprom(context, slave, ECT_SII_REV, EC_TIMEOUTEEP) ==
-             context->slavelist[slave].eep_rev))
+             htoel(context->slavelist[slave].eep_rev)))
       {
          rval = ecx_FPWRw(context->port, EC_TEMPNODE, ECT_REG_STADR, htoes(configadr) , timeout);
          context->slavelist[slave].configadr = configadr;

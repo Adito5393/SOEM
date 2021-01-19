@@ -8,10 +8,10 @@
  * EtherCAT RAW socket driver.
  *
  * Low level interface functions to send and receive EtherCAT packets.
- * EtherCAT has the property that packets are only send by the master,
- * and the send packets always return in the receive buffer.
+ * EtherCAT has the property that packets are only sent by the master,
+ * and the sent packets always return in the receive buffer.
  * There can be multiple packets "on the wire" before they return.
- * To combine the received packets with the original send packets a buffer
+ * To combine the received packets with the original sent packets a buffer
  * system is installed. The identifier is put in the index item of the
  * EtherCAT header. The index is stored and compared when a frame is received.
  * If there is a match the packet can be combined with the transmit packet
@@ -46,7 +46,7 @@ enum
 {
    /** No redundancy, single NIC mode */
    ECT_RED_NONE,
-   /** Double redundant NIC connecetion */
+   /** Double redundant NIC connection */
    ECT_RED_DOUBLE
 };
 
@@ -246,7 +246,7 @@ int ecx_closenic(ecx_portt *port)
    return 0;
 }
 
-/** Fill buffer with ethernet header structure.
+/** Fill buffer with Ethernet header structure.
  * Destination MAC is always broadcast.
  * Ethertype is always ETH_P_ECAT.
  * @param[out] p = buffer
@@ -267,10 +267,10 @@ void ec_setupheader(void *p)
 /** Get new frame identifier index and allocate corresponding rx buffer.
  * @return new index.
  */
-int ecx_getindex(ecx_portt *port)
+uint8 ecx_getindex(ecx_portt *port)
 {
    uint8 idx;
-   int cnt;
+   uint8 cnt;
 
    WaitForRtControl(port->getindex_region);
 
@@ -307,7 +307,7 @@ int ecx_getindex(ecx_portt *port)
  * @param[in] idx      = index in buffer array
  * @param[in] bufstat  = status to set
  */
-void ecx_setbufstat(ecx_portt *port, int idx, int bufstat)
+void ecx_setbufstat(ecx_portt *port, uint8 idx, int bufstat)
 {
    port->rxbufstat[idx] = bufstat;
    if (port->redstate != ECT_RED_NONE)
@@ -321,7 +321,7 @@ void ecx_setbufstat(ecx_portt *port, int idx, int bufstat)
  * @param[in] stacknumber  = 0=Primary 1=Secondary stack
  * @return socket send result
  */
-int ecx_outframe(ecx_portt *port, int idx, int stacknumber)
+int ecx_outframe(ecx_portt *port, uint8 idx, int stacknumber)
 {
    HPESTATUS status;
    DWORD txstate;
@@ -363,15 +363,16 @@ int ecx_outframe(ecx_portt *port, int idx, int stacknumber)
    }
    log_RT_event('S',(WORD)3);
 
+   (*stack->rxbufstat)[idx] = EC_BUF_TX;
    status = hpeStartTransmitter(port->handle);
    if (status != E_OK)
    {
+      (*stack->rxbufstat)[idx] = EC_BUF_EMPTY;
       result = -3;
       goto end;
    }
 
    log_RT_event('S',(WORD)4);
-   (*stack->rxbufstat)[idx] = EC_BUF_TX;
    result = lp;
 
 end:
@@ -383,7 +384,7 @@ end:
  * @param[in] idx         = index in tx buffer array
  * @return socket send result
  */
-int ecx_outframe_red(ecx_portt *port, int idx)
+int ecx_outframe_red(ecx_portt *port, uint8 idx)
 {
    HPESTATUS status;
    ec_comt *datagramP;
@@ -408,9 +409,13 @@ int ecx_outframe_red(ecx_portt *port, int idx)
       //send(sockhandle2, &ec_txbuf2, ec_txbuflength2 , 0);
       // OBS! redundant not ACTIVE for BFIN, just added to compile
       //ASSERT (0);
-	   hpeAttachTransmitBufferSet(port->redport->handle, port->tx_buffers[idx]);
-      status = hpeStartTransmitter(port->redport->handle);
+      hpeAttachTransmitBufferSet(port->redport->handle, port->tx_buffers[idx]);
       port->redport->rxbufstat[idx] = EC_BUF_TX;
+      status = hpeStartTransmitter(port->redport->handle);
+      if (status != E_OK)
+      {
+         (*stack->rxbufstat)[idx] = EC_BUF_EMPTY;
+      }
    }
 
    return rval;
@@ -454,7 +459,7 @@ static int ecx_recvpkt(ecx_portt *port, int stacknumber)
 /** Non blocking receive frame function. Uses RX buffer and index to combine
  * read frame with transmitted frame. To compensate for received frames that
  * are out-of-order all frames are stored in their respective indexed buffer.
- * If a frame was placed in the buffer previously, the function retreives it
+ * If a frame was placed in the buffer previously, the function retrieves it
  * from that buffer index without calling ec_recvpkt. If the requested index
  * is not already in the buffer it calls ec_recvpkt to fetch it. There are
  * three options now, 1 no frame read, so exit. 2 frame read but other
@@ -466,7 +471,7 @@ static int ecx_recvpkt(ecx_portt *port, int stacknumber)
  * @return Workcounter if a frame is found with corresponding index, otherwise
  * EC_NOFRAME or EC_OTHERFRAME.
  */
-int ecx_inframe(ecx_portt *port, int idx, int stacknumber)
+int ecx_inframe(ecx_portt *port, uint8 idx, int stacknumber)
 {
    uint16  l;
    int     rval;
@@ -510,7 +515,7 @@ int ecx_inframe(ecx_portt *port, int idx, int stacknumber)
             ecp =(ec_comt*)(&(*stack->tempbuf)[ETH_HEADERSIZE]);
             l = etohs(ecp->elength) & 0x0fff;
             idxf = ecp->index;
-            /* found index equals reqested index ? */
+            /* found index equals requested index ? */
             if (idxf == idx)
             {
                /* yes, put it in the buffer array (strip ethernet header) */
@@ -540,7 +545,7 @@ int ecx_inframe(ecx_portt *port, int idx, int stacknumber)
       ReleaseRtControl();
    }
 
-   /* WKC if mathing frame found */
+   /* WKC if matching frame found */
    return rval;
 }
 
@@ -555,7 +560,7 @@ int ecx_inframe(ecx_portt *port, int idx, int stacknumber)
  * @return Workcounter if a frame is found with corresponding index, otherwise
  * EC_NOFRAME.
  */
-static int ecx_waitinframe_red(ecx_portt *port, int idx, osal_timert *timer)
+static int ecx_waitinframe_red(ecx_portt *port, uint8 idx, osal_timert *timer)
 {
    osal_timert timer2;
    int wkc  = EC_NOFRAME;
@@ -586,10 +591,10 @@ static int ecx_waitinframe_red(ecx_portt *port, int idx, osal_timert *timer)
    /* only do redundant functions when in redundant mode */
    if (port->redstate != ECT_RED_NONE)
    {
-      /* primrx if the reveived MAC source on primary socket */
+      /* primrx if the received MAC source on primary socket */
       primrx = 0;
       if (wkc > EC_NOFRAME) primrx = port->rxsa[idx];
-      /* secrx if the reveived MAC source on psecondary socket */
+      /* secrx if the received MAC source on psecondary socket */
       secrx = 0;
       if (wkc2 > EC_NOFRAME) secrx = port->redport->rxsa[idx];
 
@@ -641,7 +646,7 @@ static int ecx_waitinframe_red(ecx_portt *port, int idx, osal_timert *timer)
  * @return Workcounter if a frame is found with corresponding index, otherwise
  * EC_NOFRAME.
  */
-int ecx_waitinframe(ecx_portt *port, int idx, int timeout)
+int ecx_waitinframe(ecx_portt *port, uint8 idx, int timeout)
 {
    int wkc;
    osal_timert timer;
@@ -665,7 +670,7 @@ int ecx_waitinframe(ecx_portt *port, int idx, int timeout)
    return wkc;
 }
 
-/** Blocking send and recieve frame function. Used for non processdata frames.
+/** Blocking send and receive frame function. Used for non processdata frames.
  * A datagram is build into a frame and transmitted via this function. It waits
  * for an answer and returns the workcounter. The function retries if time is
  * left and the result is WKC=0 or no frame received.
@@ -676,7 +681,7 @@ int ecx_waitinframe(ecx_portt *port, int idx, int timeout)
  * @param[in] timeout  = timeout in us
  * @return Workcounter or EC_NOFRAME
  */
-int ecx_srconfirm(ecx_portt *port, int idx, int timeout)
+int ecx_srconfirm(ecx_portt *port, uint8 idx, int timeout)
 {
    int wkc = EC_NOFRAME;
    osal_timert timer1;
@@ -701,37 +706,37 @@ int ec_closenic(void)
    return ecx_closenic(&ecx_port);
 }
 
-int ec_getindex(void)
+uint8 ec_getindex(void)
 {
    return ecx_getindex(&ecx_port);
 }
 
-void ec_setbufstat(int idx, int bufstat)
+void ec_setbufstat(uint8 idx, int bufstat)
 {
    ecx_setbufstat(&ecx_port, idx, bufstat);
 }
 
-int ec_outframe(int idx, int stacknumber)
+int ec_outframe(uint8 idx, int stacknumber)
 {
    return ecx_outframe(&ecx_port, idx, stacknumber);
 }
 
-int ec_outframe_red(int idx)
+int ec_outframe_red(uint8 idx)
 {
    return ecx_outframe_red(&ecx_port, idx);
 }
 
-int ec_inframe(int idx, int stacknumber)
+int ec_inframe(uint8 idx, int stacknumber)
 {
    return ecx_inframe(&ecx_port, idx, stacknumber);
 }
 
-int ec_waitinframe(int idx, int timeout)
+int ec_waitinframe(uint8 idx, int timeout)
 {
    return ecx_waitinframe(&ecx_port, idx, timeout);
 }
 
-int ec_srconfirm(int idx, int timeout)
+int ec_srconfirm(uint8 idx, int timeout)
 {
    return ecx_srconfirm(&ecx_port, idx, timeout);
 }
